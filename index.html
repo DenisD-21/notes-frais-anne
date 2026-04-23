@@ -50,7 +50,8 @@ input:focus,select:focus{outline:none;border-color:#C4622D!important;box-shadow:
 .empty-msg{text-align:center;padding:56px 20px;color:#C09070;font-style:italic;font-size:17px;line-height:1.7;}
 .empty-msg span{font-size:13px;font-style:normal;opacity:.65;}
 /* Entry rows */
-.erow{background:#fff;padding:11px 14px;display:flex;align-items:center;gap:11px;box-shadow:0 1px 6px rgba(196,98,45,.09);border-radius:14px;margin-bottom:7px;}
+.erow{background:#fff;padding:11px 14px;display:flex;align-items:center;gap:11px;box-shadow:0 1px 6px rgba(196,98,45,.09);border-radius:14px;margin-bottom:7px;cursor:pointer;transition:transform .15s,box-shadow .15s;}
+.erow:active{transform:scale(.99);box-shadow:0 1px 3px rgba(196,98,45,.14);}
 .erow-icon{width:38px;height:38px;border-radius:10px;flex-shrink:0;background:rgba(196,98,45,.09);display:flex;align-items:center;justify-content:center;font-size:17px;}
 .erow-info{flex:1;min-width:0;}
 .erow-desc{color:#2E1000;font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -228,7 +229,7 @@ const DBX_REDIR='http://localhost';
 // ─── State ────────────────────────────────────────────────
 let S={
   month:new Date().getMonth(), year:new Date().getFullYear(),
-  entries:{}, settlements:{}, view:'main', mode:'ik',
+  entries:{}, settlements:{}, view:'main', mode:'ik', editing:null,
   dbx:{key:'',secret:'',rt:'',path:'/Notes_de_frais_Anne.xlsx',ok:false,step:'idle',verifier:'',challenge:''},
   sync:{status:null,msg:''}, lastSync:null
 };
@@ -253,6 +254,11 @@ function loadYear(){
   }catch(e){}
 }
 function saveMonth(m,data){LS.set(sk(m),JSON.stringify(data));S.entries[m]=data;}
+// Variantes cross-year : storage keyé par (year, month)
+function saveMonthRaw(year,month,data){LS.set(STORE+':'+year+':'+month,JSON.stringify(data));if(year===S.year)S.entries[month]=data;}
+function getMonthRaw(year,month){if(year===S.year)return S.entries[month]||[];const v=LS.get(STORE+':'+year+':'+month);return v?JSON.parse(v):[];}
+function monthFromDate(d){return parseInt(d.slice(5,7),10)-1;}
+function yearFromDate(d){return parseInt(d.slice(0,4),10);}
 function saveSettlement(m,d){if(!d.date&&!d.means&&!d.ref)delete S.settlements[m];else S.settlements[m]=d;LS.set(settKey(),JSON.stringify(S.settlements));}
 function saveDbx(){LS.set(STORE+':dbx',JSON.stringify({k:S.dbx.key,s:S.dbx.secret,r:S.dbx.rt,p:S.dbx.path,v:S.dbx.verifier,ch:S.dbx.challenge,st:S.dbx.step}));}
 function buildAuthUrl(){return 'https://www.dropbox.com/oauth2/authorize?client_id='+encodeURIComponent(S.dbx.key)+'&response_type=code&redirect_uri='+encodeURIComponent(DBX_REDIR)+'&token_access_type=offline&code_challenge='+encodeURIComponent(S.dbx.challenge)+'&code_challenge_method=S256';}
@@ -506,14 +512,14 @@ function renderEntries(){
     return;
   }
   document.getElementById('entries-list').innerHTML=me.map(e=>`
-    <div class="erow">
+    <div class="erow" onclick="editEntry(${e.id})">
       <div class="erow-icon">${e.type==='ik'?'🚗':CAT_ICONS[CAT_KEYS.indexOf(e.category)]}</div>
       <div class="erow-info">
-        <div class="erow-desc">${e.description}</div>
-        <div class="erow-meta">${fmtDate(e.date)} · ${e.type==='ik'?e.vehicle+' · '+e.km+' km':CAT_LABELS[CAT_KEYS.indexOf(e.category)]}</div>
+        <div class="erow-desc">${escX(e.description)}</div>
+        <div class="erow-meta">${fmtDate(e.date)} · ${e.type==='ik'?escX(e.vehicle)+' · '+e.km+' km':CAT_LABELS[CAT_KEYS.indexOf(e.category)]}</div>
       </div>
       <div class="erow-amt">${fmtNum(e.type==='ik'?e.ik:e.amount)} €</div>
-      <button class="del-btn" onclick="delEntry(${e.id})">&#215;</button>
+      <button class="del-btn" onclick="event.stopPropagation();delEntry(${e.id})">&#215;</button>
     </div>`).join('');
   const bkRows=[{label:'IK kilométriques',v:t.ik,sub:t.km+' km'},...CAT_KEYS.map((k,i)=>({label:CAT_LABELS[i],v:t[k],sub:null}))].filter(x=>x.v>0);
   const bk=document.getElementById('breakdown-card');
@@ -599,27 +605,38 @@ function setMonth(i){S.month=i;render();}
 function chgYear(d){S.year+=d;loadYear();render();}
 function toggleView(){S.view=S.view==='settings'?'main':'settings';render();}
 
-function showForm(){
+function showForm(entry){
   document.getElementById('form-overlay').classList.remove('hidden');
   const today=new Date().toISOString().slice(0,10);
-  document.getElementById('f-date').value=today;
-  document.getElementById('f-desc').value='';
-  document.getElementById('f-amt').value='';
-  document.getElementById('f-km').value='';
-  document.getElementById('f-from').value=DEFAULT_FROM;
-  document.getElementById('f-to').value='';
-  document.getElementById('f-return').checked=true;
-  document.getElementById('f-veh').value=DEFAULT_VEH;
+  const isEdit=!!entry;
+  document.querySelector('.form-title').textContent=isEdit?'Modifier la dépense':'Nouvelle dépense';
+  document.getElementById('save-btn').textContent=isEdit?'Enregistrer les modifications':'Enregistrer';
+  document.getElementById('f-date').value=entry?entry.date:today;
+  document.getElementById('f-desc').value=entry?entry.description:'';
+  document.getElementById('f-amt').value=entry&&entry.type==='frais'?entry.amount:'';
+  document.getElementById('f-km').value=entry&&entry.type==='ik'?entry.km:'';
+  document.getElementById('f-from').value=entry&&entry.type==='ik'?(entry.from||DEFAULT_FROM):DEFAULT_FROM;
+  document.getElementById('f-to').value=entry&&entry.type==='ik'?(entry.to||''):'';
+  document.getElementById('f-return').checked=entry&&entry.type==='ik'?entry.roundTrip!==false:true;
+  document.getElementById('f-veh').value=entry&&entry.type==='ik'?entry.vehicle:DEFAULT_VEH;
+  if(entry&&entry.type==='frais')document.getElementById('f-cat').value=entry.category;
   document.getElementById('ik-preview-box').classList.add('hidden');
   resetCalcBtn();
-  setMode(S.mode);
+  setMode(entry?entry.type:S.mode);
+  if(entry&&entry.type==='ik')updIKPreview();
+}
+function editEntry(id){
+  const entry=(S.entries[S.month]||[]).find(e=>e.id===id);
+  if(!entry)return;
+  S.editing={year:S.year,month:S.month,id};
+  showForm(entry);
 }
 function resetCalcBtn(){
   const b=document.getElementById('calc-btn');
   if(!b)return;
   b.className='';b.innerHTML='&#128506; Calculer la distance';
 }
-function hideForm(){document.getElementById('form-overlay').classList.add('hidden');}
+function hideForm(){document.getElementById('form-overlay').classList.add('hidden');S.editing=null;}
 function setMode(m){
   S.mode=m;
   document.getElementById('tab-frais').classList.toggle('active',m==='frais');
@@ -678,7 +695,8 @@ function saveEntry(){
   const date=document.getElementById('f-date').value;
   const desc=document.getElementById('f-desc').value.trim();
   if(!date||!desc)return;
-  let e={id:Date.now(),date,description:desc,type:S.mode};
+  const wasEdit=!!S.editing;
+  let e={id:wasEdit?S.editing.id:Date.now(),date,description:desc,type:S.mode};
   if(S.mode==='ik'){
     const km=parseFloat(document.getElementById('f-km').value);
     const veh=document.getElementById('f-veh').value;
@@ -692,12 +710,28 @@ function saveEntry(){
     if(!amt||amt<=0)return;
     e={...e,category:document.getElementById('f-cat').value,amount:amt};
   }
-  const me=S.entries[S.month]||[];
-  const updated=[...me,e].sort((a,b)=>a.date.localeCompare(b.date));
-  saveMonth(S.month,updated);
+  const targetYear=yearFromDate(date),targetMonth=monthFromDate(date);
+  // Retirer de l'ancien emplacement si édition
+  if(wasEdit){
+    const {year:oy,month:om,id:oid}=S.editing;
+    const old=getMonthRaw(oy,om).filter(x=>x.id!==oid);
+    saveMonthRaw(oy,om,old);
+  }
+  // Ajouter à la cible (merge)
+  const existing=getMonthRaw(targetYear,targetMonth).filter(x=>x.id!==e.id);
+  saveMonthRaw(targetYear,targetMonth,[...existing,e].sort((a,b)=>a.date.localeCompare(b.date)));
+  // Bascule auto sur le mois/année de la dépense
+  const switched=targetYear!==S.year||targetMonth!==S.month||(wasEdit&&(S.editing.year!==targetYear||S.editing.month!==targetMonth));
+  if(targetYear!==S.year){S.year=targetYear;loadYear();}
+  S.month=targetMonth;
+  S.editing=null;
   const btn=document.getElementById('save-btn');
   btn.textContent='✓ Enregistré !';btn.classList.add('ok');
-  setTimeout(()=>{btn.textContent='Enregistrer';btn.classList.remove('ok');hideForm();render();},700);
+  setTimeout(()=>{
+    btn.textContent='Enregistrer';btn.classList.remove('ok');
+    hideForm();render();
+    if(switched){showSync('ok',(wasEdit?'Déplacée vers ':'Ajoutée à ')+MONTHS[targetMonth]+' '+targetYear);setTimeout(()=>showSync(null,''),2500);}
+  },700);
 }
 function delEntry(id){
   const updated=(S.entries[S.month]||[]).filter(e=>e.id!==id);
