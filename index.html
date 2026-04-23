@@ -246,7 +246,8 @@ async function genChallenge(v){const d=await crypto.subtle.digest('SHA-256',new 
 const dbxPost=(url,p)=>fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(p)}).then(r=>r.json());
 const dbxExchange=(k,s,c,v)=>dbxPost('https://api.dropboxapi.com/oauth2/token',{code:c,grant_type:'authorization_code',client_id:k,client_secret:s,code_verifier:v,redirect_uri:DBX_REDIR});
 const dbxRefresh=(k,s,rt)=>dbxPost('https://api.dropboxapi.com/oauth2/token',{grant_type:'refresh_token',refresh_token:rt,client_id:k,client_secret:s}).then(d=>d.access_token);
-const dbxUpload=(token,path,data)=>fetch('https://content.dropboxapi.com/2/files/upload',{method:'POST',headers:{Authorization:'Bearer '+token,'Dropbox-API-Arg':JSON.stringify({path,mode:'overwrite',autorename:false,mute:false}),'Content-Type':'application/octet-stream'},body:data}).then(r=>r.json());
+const dbxArg=o=>JSON.stringify(o).replace(/[\u007f-\uffff]/g,c=>'\\u'+('0000'+c.charCodeAt(0).toString(16)).slice(-4));
+const dbxUpload=(token,path,data)=>fetch('https://content.dropboxapi.com/2/files/upload',{method:'POST',headers:{Authorization:'Bearer '+token,'Dropbox-API-Arg':dbxArg({path,mode:'overwrite',autorename:false,mute:false}),'Content-Type':'application/octet-stream'},body:data}).then(async r=>{const t=await r.text();try{return JSON.parse(t);}catch{return{error:'HTTP '+r.status,error_summary:t.slice(0,200)};}});
 
 // ─── ZIP / XLSX builder ────────────────────────────────────
 function crc32(d){
