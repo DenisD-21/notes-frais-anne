@@ -205,7 +205,7 @@ const DBX_REDIR='http://localhost';
 let S={
   month:new Date().getMonth(), year:new Date().getFullYear(),
   entries:{}, view:'main', mode:'frais',
-  dbx:{token:'',path:'/Notes_de_frais_Anne.xlsx',ok:false},
+  dbx:{key:'',secret:'',rt:'',path:'/Notes_de_frais_Anne.xlsx',ok:false,step:'idle',verifier:''},
   sync:{status:null,msg:''}, lastSync:null
 };
 
@@ -221,12 +221,12 @@ function loadYear(){
   S.entries=all;
   try{
     const s=LS.get(STORE+':dbx');
-    if(s){const d=JSON.parse(s);S.dbx.token=d.t||'';S.dbx.path=d.p||'/Notes_de_frais_Anne.xlsx';S.dbx.ok=!!d.t;}
+    if(s){const d=JSON.parse(s);S.dbx.key=d.k||'';S.dbx.secret=d.s||'';S.dbx.rt=d.r||'';S.dbx.path=d.p||'/Notes_de_frais_Anne.xlsx';S.dbx.ok=!!d.r;}
     S.lastSync=LS.get(STORE+':ls');
   }catch(e){}
 }
 function saveMonth(m,data){LS.set(sk(m),JSON.stringify(data));S.entries[m]=data;}
-function saveDbx(){LS.set(STORE+':dbx',JSON.stringify({t:S.dbx.token,p:S.dbx.path}));}
+function saveDbx(){LS.set(STORE+':dbx',JSON.stringify({k:S.dbx.key,s:S.dbx.secret,r:S.dbx.rt,p:S.dbx.path}));}
 
 // ─── Utils ────────────────────────────────────────────────
 function fmtDate(d){const[y,m,day]=d.split('-');return day+'/'+m+'/'+y;}
@@ -399,19 +399,34 @@ function renderSettings(){
       <input class="finput" id="s-path" value="${S.dbx.path}" type="text">
       <button class="sbtn" onclick="savePath()">Enregistrer le chemin</button>
       <button class="sbtn outline" onclick="disconnect()" style="margin-top:8px">Déconnecter Dropbox</button>`;
+  } else if(S.dbx.step==='code'){
+    c.innerHTML=`<div class="scard">
+      <div style="color:#2E1000;font-weight:600;font-size:14px;margin-bottom:10px">Étape 2 — Récupérer le code</div>
+      <div class="step-row"><span class="step-num">1.</span><span class="step-txt">Sur la page Dropbox qui vient de s'ouvrir, cliquez "Allow" / "Autoriser"</span></div>
+      <div class="step-row"><span class="step-num">2.</span><span class="step-txt">Vous serez redirigé vers une page localhost qui ne s'affiche pas — c'est normal</span></div>
+      <div class="step-row"><span class="step-num">3.</span><span class="step-txt">Copiez l'URL complète depuis la barre d'adresse, ou juste le code (après "code=")</span></div>
+      <div class="step-row"><span class="step-num">4.</span><span class="step-txt">Collez ci-dessous et validez</span></div>
+      </div>
+      <label class="flabel">CODE OU URL DE REDIRECTION</label>
+      <input class="finput" id="s-code" type="text" placeholder="Collez le code ou l'URL ici…">
+      <button class="sbtn" onclick="completeOAuth()">Valider</button>
+      <button class="sbtn outline" onclick="cancelOAuth()" style="margin-top:8px">Annuler</button>`;
   } else {
     c.innerHTML=`<div class="scard">
-      <div style="color:#2E1000;font-weight:600;font-size:14px;margin-bottom:10px">Comment obtenir le token</div>
+      <div style="color:#2E1000;font-weight:600;font-size:14px;margin-bottom:10px">Étape 1 — Configurer l'app Dropbox</div>
       <div class="step-row"><span class="step-num">1.</span><span class="step-txt">Allez sur dropbox.com/developers/apps</span></div>
-      <div class="step-row"><span class="step-num">2.</span><span class="step-txt">Cliquez sur votre app CLOS SAINT JACQUES</span></div>
-      <div class="step-row"><span class="step-num">3.</span><span class="step-txt">Section "Generated access token" &rarr; cliquez Generate</span></div>
-      <div class="step-row"><span class="step-num">4.</span><span class="step-txt">Copiez le token et collez-le ci-dessous</span></div>
+      <div class="step-row"><span class="step-num">2.</span><span class="step-txt">Créez (ou sélectionnez) votre app — type d'accès : <b>Full Dropbox</b></span></div>
+      <div class="step-row"><span class="step-num">3.</span><span class="step-txt">Onglet Permissions : cocher <b>files.content.write</b> + <b>files.content.read</b>, puis Submit</span></div>
+      <div class="step-row"><span class="step-num">4.</span><span class="step-txt">Onglet Settings : ajoutez <b>http://localhost</b> dans "Redirect URIs"</span></div>
+      <div class="step-row"><span class="step-num">5.</span><span class="step-txt">Copiez App key et App secret ci-dessous</span></div>
       </div>
-      <label class="flabel">ACCESS TOKEN DROPBOX</label>
-      <input class="finput" id="s-token" type="password" placeholder="Collez votre token ici…">
+      <label class="flabel">APP KEY</label>
+      <input class="finput" id="s-key" type="text" value="${S.dbx.key}" placeholder="App key">
+      <label class="flabel">APP SECRET</label>
+      <input class="finput" id="s-sec" type="password" value="${S.dbx.secret}" placeholder="App secret">
       <label class="flabel">CHEMIN DU FICHIER SUR DROPBOX</label>
       <input class="finput" id="s-path" value="${S.dbx.path}" placeholder="/Notes_de_frais_Anne.xlsx">
-      <button class="sbtn" onclick="saveToken()">Connecter Dropbox</button>`;
+      <button class="sbtn" onclick="startOAuth()">Connecter Dropbox</button>`;
   }
 }
 function showSync(status,msg){
@@ -492,23 +507,29 @@ async function startOAuth(){
   S.dbx.step='code';renderSettings();
 }
 async function completeOAuth(){
-  const code=document.getElementById('s-code').value.trim();
-  if(!code)return;
+  const raw=document.getElementById('s-code').value.trim();
+  if(!raw)return;
+  const m=raw.match(/[?&]code=([^&\s#]+)/);
+  const code=m?decodeURIComponent(m[1]):raw;
   showSync('syncing','Connexion en cours…');
   try{
     const data=await dbxExchange(S.dbx.key,S.dbx.secret,code,S.dbx.verifier);
     if(data.error)throw new Error(data.error_description||data.error);
-    S.dbx.rt=data.refresh_token;S.dbx.ok=true;S.dbx.step='idle';
+    if(!data.refresh_token)throw new Error('Pas de refresh_token reçu — vérifiez App key/secret');
+    S.dbx.rt=data.refresh_token;S.dbx.ok=true;S.dbx.step='idle';S.dbx.verifier='';
     saveDbx();showSync('ok','Dropbox connecté !');render();
     setTimeout(()=>showSync(null,''),3000);
   }catch(err){showSync('error','Erreur : '+err.message);}
 }
+function cancelOAuth(){S.dbx.step='idle';S.dbx.verifier='';renderSettings();}
 async function syncDropbox(){
   showSync('syncing','Génération du fichier Excel…');
   try{
-    const token=S.dbx.token;
-    if(!token)throw new Error('Token manquant — configurez Dropbox dans ⚙');
+    if(!S.dbx.rt)throw new Error('Non configuré — voir ⚙');
     const data=buildExcel(S.year);
+    showSync('syncing','Renouvellement du token…');
+    const token=await dbxRefresh(S.dbx.key,S.dbx.secret,S.dbx.rt);
+    if(!token)throw new Error('Refresh échoué — reconnectez Dropbox');
     showSync('syncing','Envoi vers Dropbox…');
     const res=await dbxUpload(token,S.dbx.path,new Uint8Array(data));
     if(res.error)throw new Error(res.error_summary||res.error);
@@ -518,7 +539,7 @@ async function syncDropbox(){
     setTimeout(()=>showSync(null,''),4000);
   }catch(err){showSync('error','Erreur : '+err.message);}
 }
-function disconnect(){S.dbx.ok=false;S.dbx.token='';saveDbx();renderSettings();renderActionBtns();}
+function disconnect(){S.dbx.ok=false;S.dbx.rt='';S.dbx.key='';S.dbx.secret='';S.dbx.step='idle';saveDbx();renderSettings();renderActionBtns();}
 function savePath(){S.dbx.path=document.getElementById('s-path').value.trim();saveDbx();renderSettings();renderActionBtns();}
 
 function doCSV(){
@@ -532,16 +553,6 @@ function doCSV(){
   URL.revokeObjectURL(url);
 }
 
-function saveToken(){
-  const t=document.getElementById('s-token').value.trim();
-  const p=document.getElementById('s-path').value.trim()||'/Notes_de_frais_Anne.xlsx';
-  if(!t)return;
-  S.dbx.token=t;S.dbx.path=p;S.dbx.ok=true;
-  saveDbx();
-  showSync('ok','Dropbox connecté !');
-  render();
-  setTimeout(()=>showSync(null,''),3000);
-}
 
 // ─── Init ─────────────────────────────────────────────────
 (function init(){
