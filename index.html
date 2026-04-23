@@ -233,6 +233,7 @@ const DBX_REDIR='http://localhost';
 let S={
   month:new Date().getMonth(), year:new Date().getFullYear(),
   entries:{}, settlements:{}, view:'main', mode:'ik', editing:null,
+  mapbox:{token:''},
   dbx:{key:'',secret:'',rt:'',path:'/Notes_de_frais_Anne.xlsx',ok:false,step:'idle',verifier:'',challenge:''},
   sync:{status:null,msg:''}, lastSync:null
 };
@@ -250,6 +251,7 @@ function loadYear(){
   for(let m=0;m<12;m++){const v=LS.get(sk(m));all[m]=v?JSON.parse(v):[];}
   S.entries=all;
   const ss=LS.get(settKey());S.settlements=ss?JSON.parse(ss):{};
+  const mb=LS.get(STORE+':mapbox');if(mb){try{S.mapbox.token=JSON.parse(mb).t||'';}catch(e){}}
   try{
     const s=LS.get(STORE+':dbx');
     if(s){const d=JSON.parse(s);S.dbx.key=d.k||'';S.dbx.secret=d.s||'';S.dbx.rt=d.r||'';S.dbx.path=d.p||'/{year} - Notes_de_frais_Anne.xlsx';S.dbx.verifier=d.v||'';S.dbx.challenge=d.ch||'';S.dbx.step=d.st||'idle';S.dbx.ok=!!d.r;if(S.dbx.step==='code'&&!S.dbx.challenge)S.dbx.step='idle';
@@ -267,6 +269,7 @@ function getMonthRaw(year,month){if(year===S.year)return S.entries[month]||[];co
 function monthFromDate(d){return parseInt(d.slice(5,7),10)-1;}
 function yearFromDate(d){return parseInt(d.slice(0,4),10);}
 function saveSettlement(m,d){if(!d.date&&!d.means&&!d.ref)delete S.settlements[m];else S.settlements[m]=d;LS.set(settKey(),JSON.stringify(S.settlements));}
+function saveMapbox(){LS.set(STORE+':mapbox',JSON.stringify({t:S.mapbox.token}));}
 function saveDbx(){LS.set(STORE+':dbx',JSON.stringify({k:S.dbx.key,s:S.dbx.secret,r:S.dbx.rt,p:S.dbx.path,v:S.dbx.verifier,ch:S.dbx.challenge,st:S.dbx.step}));}
 function resolveDbxPath(year){return(S.dbx.path||'').replace(/\{year\}/g,year);}
 function buildAuthUrl(){return 'https://www.dropbox.com/oauth2/authorize?client_id='+encodeURIComponent(S.dbx.key)+'&response_type=code&redirect_uri='+encodeURIComponent(DBX_REDIR)+'&token_access_type=offline&code_challenge='+encodeURIComponent(S.dbx.challenge)+'&code_challenge_method=S256';}
@@ -566,11 +569,27 @@ function renderActionBtns(){
     ?`<button class="btn-primary" onclick="syncDropbox()">&#9729; SYNCHRONISER AVEC DROPBOX</button><button class="btn-outline" onclick="doCSV()">Exporter CSV (option de secours)</button>`
     :`<button class="btn-dashed" onclick="S.view='settings';render()">&#9881; Configurer Dropbox pour synchroniser</button><button class="btn-outline" onclick="doCSV()">Exporter CSV</button>`;
 }
+function renderMapboxBlock(){
+  const tok=S.mapbox.token||'';
+  const ok=tok.length>20;
+  return `<div style="margin-top:24px;padding-top:20px;border-top:1px solid rgba(196,98,45,.2);">
+    <div class="sok-title" style="color:${ok?'#4A8A35':'#8B6F4E'};margin-bottom:8px">${ok?'✓':'🗺'} Géocodage Mapbox ${ok?'actif':'(facultatif)'}</div>
+    <div style="font-size:12px;color:#5C4032;line-height:1.5;margin-bottom:10px">
+      Améliore la reconnaissance des commerces et POI dans le calcul de distance. ${ok?'Actif avec fallback Nominatim.':'Sans token, Nominatim est utilisé par défaut (couverture limitée pour les petites structures).'}
+      <br>Compte gratuit sur <b>mapbox.com</b> → Access Tokens → <i>public token</i> (commence par <code>pk.</code>).
+    </div>
+    <label class="flabel">TOKEN MAPBOX (pk.…)</label>
+    <input class="finput" id="s-mbtok" value="${escX(tok)}" type="text" placeholder="pk.eyJ1Ijo…">
+    <button class="sbtn" onclick="saveMapboxToken()">Enregistrer le token Mapbox</button>
+    ${ok?`<button class="sbtn outline" onclick="clearMapboxToken()" style="margin-top:8px">Supprimer le token</button>`:''}
+  </div>`;
+}
 function renderSettings(){
   const c=document.getElementById('settings-content');
+  let dbxBlock;
   if(S.dbx.ok){
     const tmpl=S.dbx.path||'',resolved=resolveDbxPath(S.year),hasY=tmpl.includes('{year}');
-    c.innerHTML=`<div class="scard ok"><div class="sok-title">✓ Dropbox connecté</div>
+    dbxBlock=`<div class="scard ok"><div class="sok-title">✓ Dropbox connecté</div>
       <div class="smeta">Template : <code>${escX(tmpl)}</code></div>
       ${hasY?`<div class="smeta">Pour ${S.year} → <code>${escX(resolved)}</code></div>`:''}
       ${S.lastSync?`<div class="smeta">Dernière synchro : ${S.lastSync}</div>`:''}</div>
@@ -580,7 +599,7 @@ function renderSettings(){
       <button class="sbtn" onclick="savePath()">Enregistrer le chemin</button>
       <button class="sbtn outline" onclick="disconnect()" style="margin-top:8px">Déconnecter Dropbox</button>`;
   } else if(S.dbx.step==='code'){
-    c.innerHTML=`<div class="scard">
+    dbxBlock=`<div class="scard">
       <div style="color:#2E1000;font-weight:600;font-size:14px;margin-bottom:10px">Étape 2 — Autoriser Dropbox</div>
       <div class="step-row"><span class="step-num">1.</span><span class="step-txt">Tapez le bouton ci-dessous pour ouvrir l'autorisation Dropbox dans un nouvel onglet</span></div>
       <div class="step-row"><span class="step-num">2.</span><span class="step-txt">Vérifiez que vous êtes loguée sur le bon compte Dropbox, puis cliquez <b>Allow / Autoriser</b></span></div>
@@ -593,7 +612,7 @@ function renderSettings(){
       <button class="sbtn" onclick="completeOAuth()">Valider</button>
       <button class="sbtn outline" onclick="cancelOAuth()" style="margin-top:8px">Annuler</button>`;
   } else {
-    c.innerHTML=`<div class="scard">
+    dbxBlock=`<div class="scard">
       <div style="color:#2E1000;font-weight:600;font-size:14px;margin-bottom:10px">Étape 1 — Configurer l'app Dropbox</div>
       <div class="step-row"><span class="step-num">1.</span><span class="step-txt">Allez sur dropbox.com/developers/apps</span></div>
       <div class="step-row"><span class="step-num">2.</span><span class="step-txt">Créez (ou sélectionnez) votre app — type d'accès : <b>Full Dropbox</b></span></div>
@@ -609,6 +628,20 @@ function renderSettings(){
       <input class="finput" id="s-path" value="${escX(S.dbx.path)}" placeholder="/.../{year} - Notes_de_frais_Anne.xlsx">
       <button class="sbtn" onclick="startOAuth()">Connecter Dropbox</button>`;
   }
+  c.innerHTML=dbxBlock+renderMapboxBlock();
+}
+function saveMapboxToken(){
+  const t=document.getElementById('s-mbtok').value.trim();
+  S.mapbox.token=t;
+  saveMapbox();
+  showSync('ok',t?'Token Mapbox enregistré':'Token Mapbox effacé');
+  setTimeout(()=>showSync(null,''),2000);
+  renderSettings();
+}
+function clearMapboxToken(){
+  S.mapbox.token='';
+  saveMapbox();
+  renderSettings();
 }
 function showSync(status,msg,pct){
   S.sync={status,msg,pct};
@@ -688,14 +721,32 @@ function setMode(m){
   document.getElementById('frais-fields').classList.toggle('hidden',m==='ik');
   document.getElementById('ik-fields').classList.toggle('hidden',m==='frais');
 }
-// Géocodage (Nominatim) + routage (OSRM) — gratuits, sans clé.
-async function geocodeAddr(q){
+// Géocodage — Mapbox si token disponible (meilleure couverture POI), sinon Nominatim (fallback).
+// Routage : OSRM gratuit, sans clé.
+async function geocodeMapbox(q){
+  const prox=`${DEFAULT_FROM_COORDS.lon},${DEFAULT_FROM_COORDS.lat}`; // bias de proximité sur Meursault
+  const url=`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(q)}.json?access_token=${encodeURIComponent(S.mapbox.token)}&limit=1&language=fr&proximity=${prox}`;
+  const r=await fetch(url);
+  if(!r.ok)throw new Error('Mapbox '+r.status);
+  const d=await r.json();
+  if(!d.features||!d.features.length)throw new Error('Mapbox: aucun résultat pour '+q);
+  const f=d.features[0];
+  return{lat:f.center[1],lon:f.center[0]};
+}
+async function geocodeNominatim(q){
   const url='https://nominatim.openstreetmap.org/search?format=json&limit=1&addressdetails=0&q='+encodeURIComponent(q);
   const r=await fetch(url,{headers:{'Accept-Language':'fr'}});
   if(!r.ok)throw new Error('Nominatim '+r.status);
   const a=await r.json();
   if(!a.length)throw new Error('Adresse introuvable : '+q);
   return{lat:+a[0].lat,lon:+a[0].lon};
+}
+async function geocodeAddr(q){
+  if(S.mapbox.token){
+    try{return await geocodeMapbox(q);}
+    catch(e){console.warn('Mapbox fallback Nominatim :',e.message);}
+  }
+  return geocodeNominatim(q);
 }
 async function routeKm(a,b){
   const url=`https://router.project-osrm.org/route/v1/driving/${a.lon},${a.lat};${b.lon},${b.lat}?overview=false`;
