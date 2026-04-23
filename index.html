@@ -32,10 +32,13 @@ input:focus,select:focus{outline:none;border-color:#C4622D!important;box-shadow:
 .mpill{padding:6px 4px;border-radius:8px;font-size:11px;line-height:1.25;text-align:center;border:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.22);color:rgba(255,255,255,.88);cursor:pointer;transition:all .18s;}
 .mpill.active{background:rgba(255,255,255,.92);color:#C4622D;font-weight:700;border:none;}
 /* Sync banner */
-#sync-banner{padding:10px 22px;font-size:13px;color:#fff;display:flex;align-items:center;gap:8px;}
+#sync-banner{padding:10px 22px;font-size:13px;color:#fff;display:flex;align-items:center;gap:12px;}
 #sync-banner.ok{background:#4A8A35;}
 #sync-banner.error{background:#C03030;}
 #sync-banner.syncing{background:#C4622D;}
+.sync-msg{flex:0 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sync-bar-wrap{flex:1 1 auto;min-width:60px;max-width:280px;height:4px;background:rgba(255,255,255,.25);border-radius:3px;overflow:hidden;}
+.sync-bar{height:100%;background:#fff;width:0;transition:width .4s ease-out;border-radius:3px;}
 /* Totals */
 #totals-bar{background:#FFF7EE;border-bottom:2px solid rgba(196,98,45,.13);padding:14px 22px;display:flex;justify-content:space-between;align-items:center;}
 .tot-lbl{color:#C4622D;font-size:9px;letter-spacing:2.5px;margin-bottom:2px;font-weight:600;}
@@ -288,6 +291,12 @@ const dbxExchange=(k,s,c,v)=>dbxPost('https://api.dropboxapi.com/oauth2/token',{
 const dbxRefresh=(k,s,rt)=>dbxPost('https://api.dropboxapi.com/oauth2/token',{grant_type:'refresh_token',refresh_token:rt,client_id:k,client_secret:s}).then(d=>d.access_token);
 const dbxArg=o=>JSON.stringify(o).replace(/[\u007f-\uffff]/g,c=>'\\u'+('0000'+c.charCodeAt(0).toString(16)).slice(-4));
 const dbxUpload=(token,path,data)=>fetch('https://content.dropboxapi.com/2/files/upload',{method:'POST',headers:{Authorization:'Bearer '+token,'Dropbox-API-Arg':dbxArg({path,mode:'overwrite',autorename:false,mute:false}),'Content-Type':'application/octet-stream'},body:data}).then(async r=>{const t=await r.text();try{return JSON.parse(t);}catch{return{error:'HTTP '+r.status,error_summary:t.slice(0,200)};}});
+// Endpoints JSON (body UTF-8, pas de header Dropbox-API-Arg → pas besoin de dbxArg)
+async function dbxJson(url,body,token){const r=await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body)});const t=await r.text();try{return JSON.parse(t);}catch{return{error:'HTTP '+r.status,error_summary:t.slice(0,200)};}}
+const dbxCopy=(token,fromPath,toPath)=>dbxJson('https://api.dropboxapi.com/2/files/copy_v2',{from_path:fromPath,to_path:toPath,autorename:false,allow_ownership_transfer:false},token);
+const dbxListFolder=(token,path)=>dbxJson('https://api.dropboxapi.com/2/files/list_folder',{path,recursive:false,include_deleted:false},token);
+const dbxDelete=(token,path)=>dbxJson('https://api.dropboxapi.com/2/files/delete_v2',{path},token);
+const dbxCreateFolder=(token,path)=>dbxJson('https://api.dropboxapi.com/2/files/create_folder_v2',{path,autorename:false},token);
 
 // ─── ZIP / XLSX builder ────────────────────────────────────
 function crc32(d){
@@ -601,11 +610,38 @@ function renderSettings(){
       <button class="sbtn" onclick="startOAuth()">Connecter Dropbox</button>`;
   }
 }
-function showSync(status,msg){
-  S.sync={status,msg};
+function showSync(status,msg,pct){
+  S.sync={status,msg,pct};
   const b=document.getElementById('sync-banner');
   if(!status){b.classList.add('hidden');return;}
-  b.className=status;b.innerHTML=(status==='syncing'?'⏳':status==='ok'?'✓':'⚠')+' '+msg;
+  b.className=status;b.classList.remove('hidden');
+  const icon=status==='syncing'?'⏳':status==='ok'?'✓':'⚠';
+  const bar=status==='syncing'?`<div class="sync-bar-wrap"><div class="sync-bar" style="width:${Math.max(0,Math.min(100,pct||0))}%"></div></div>`:'';
+  b.innerHTML=`<span class="sync-msg">${icon} ${escX(msg)}</span>${bar}`;
+}
+// ─── Backup helpers ───────────────────────────────────────
+function backupStamp(d){const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;}
+function backupDirOf(orig){const i=orig.lastIndexOf('/');return orig.slice(0,i)+'/_backups';}
+function backupPathOf(orig,stamp){const i=orig.lastIndexOf('/');const name=orig.slice(i+1);const j=name.lastIndexOf('.');const base=j>=0?name.slice(0,j):name;const ext=j>=0?name.slice(j):'';return `${backupDirOf(orig)}/${base}_${stamp}${ext}`;}
+async function cleanOldBackups(token,originalPath){
+  const backupDir=backupDirOf(originalPath);
+  const name=originalPath.slice(originalPath.lastIndexOf('/')+1);
+  const base=name.lastIndexOf('.')>=0?name.slice(0,name.lastIndexOf('.')):name;
+  const listing=await dbxListFolder(token,backupDir);
+  if(listing.error)return 0; // dossier inexistant au 1er sync : skip
+  const cutoff=Date.now()-31*86400000;
+  const stampRe=/_(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})(?:\.[^.]+)?$/;
+  const toDel=[];
+  (listing.entries||[]).forEach(e=>{
+    if(e['.tag']!=='file')return;
+    if(!e.name.startsWith(base+'_'))return;
+    const m=stampRe.exec(e.name);
+    if(!m)return;
+    const d=Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]);
+    if(d<cutoff)toDel.push(e.path_lower);
+  });
+  await Promise.all(toDel.map(p=>dbxDelete(token,p).catch(()=>null)));
+  return toDel.length;
 }
 
 // ─── Actions ──────────────────────────────────────────────
@@ -775,20 +811,45 @@ async function completeOAuth(){
 }
 function cancelOAuth(){S.dbx.step='idle';S.dbx.verifier='';S.dbx.challenge='';saveDbx();renderSettings();}
 async function syncDropbox(){
-  showSync('syncing','Génération du fichier Excel…');
+  showSync('syncing','Génération du fichier Excel…',5);
   try{
     if(!S.dbx.rt)throw new Error('Non configuré — voir ⚙');
     const data=buildExcel(S.year);
-    showSync('syncing','Renouvellement du token…');
+    const path=resolveDbxPath(S.year);
+    showSync('syncing','Renouvellement du token…',15);
     const token=await dbxRefresh(S.dbx.key,S.dbx.secret,S.dbx.rt);
     if(!token)throw new Error('Refresh échoué — reconnectez Dropbox');
-    showSync('syncing','Envoi vers Dropbox…');
-    const res=await dbxUpload(token,resolveDbxPath(S.year),new Uint8Array(data));
+    // Backup du fichier actuel (non bloquant si source absente au 1er sync)
+    showSync('syncing','Sauvegarde du fichier existant…',30);
+    const stamp=backupStamp(new Date());
+    const bpath=backupPathOf(path,stamp);
+    const cp=await dbxCopy(token,path,bpath);
+    let backupDone=!cp.error;
+    if(cp.error){
+      const summary=cp.error_summary||'';
+      if(/not_found/.test(summary)){backupDone=false;}
+      else if(/conflict|path\/not_found_folder/.test(summary)){
+        // le dossier _backups n'existe pas → le créer puis retenter
+        await dbxCreateFolder(token,backupDirOf(path)).catch(()=>null);
+        const cp2=await dbxCopy(token,path,bpath);
+        backupDone=!cp2.error;
+      }
+    }
+    // Cleanup des backups >31j
+    showSync('syncing','Nettoyage des anciens backups…',50);
+    const deletedCount=await cleanOldBackups(token,path).catch(()=>0);
+    // Upload
+    showSync('syncing','Envoi vers Dropbox…',75);
+    const res=await dbxUpload(token,path,new Uint8Array(data));
     if(res.error)throw new Error(res.error_summary||res.error);
+    showSync('syncing','Finalisation…',100);
     const ts=new Date().toLocaleString('fr-FR');
     S.lastSync=ts;LS.set(STORE+':ls',ts);
-    showSync('ok','Synchronisé le '+ts);
-    setTimeout(()=>showSync(null,''),4000);
+    const extras=[];
+    if(backupDone)extras.push('backup OK');
+    if(deletedCount>0)extras.push(deletedCount+' ancien'+(deletedCount>1?'s':'')+' supprimé'+(deletedCount>1?'s':''));
+    showSync('ok','Synchronisé le '+ts+(extras.length?' · '+extras.join(' · '):''));
+    setTimeout(()=>showSync(null,''),5000);
   }catch(err){showSync('error','Erreur : '+err.message);}
 }
 function disconnect(){S.dbx.ok=false;S.dbx.rt='';S.dbx.key='';S.dbx.secret='';S.dbx.step='idle';saveDbx();renderSettings();renderActionBtns();}
