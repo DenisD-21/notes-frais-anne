@@ -205,7 +205,7 @@ const DBX_REDIR='http://localhost';
 let S={
   month:new Date().getMonth(), year:new Date().getFullYear(),
   entries:{}, view:'main', mode:'frais',
-  dbx:{key:'',secret:'',rt:'',path:'/Notes_de_frais_Anne.xlsx',ok:false,step:'idle',verifier:''},
+  dbx:{key:'',secret:'',rt:'',path:'/Notes_de_frais_Anne.xlsx',ok:false,step:'idle',verifier:'',challenge:''},
   sync:{status:null,msg:''}, lastSync:null
 };
 
@@ -221,12 +221,13 @@ function loadYear(){
   S.entries=all;
   try{
     const s=LS.get(STORE+':dbx');
-    if(s){const d=JSON.parse(s);S.dbx.key=d.k||'';S.dbx.secret=d.s||'';S.dbx.rt=d.r||'';S.dbx.path=d.p||'/Notes_de_frais_Anne.xlsx';S.dbx.ok=!!d.r;}
+    if(s){const d=JSON.parse(s);S.dbx.key=d.k||'';S.dbx.secret=d.s||'';S.dbx.rt=d.r||'';S.dbx.path=d.p||'/Notes_de_frais_Anne.xlsx';S.dbx.verifier=d.v||'';S.dbx.challenge=d.ch||'';S.dbx.step=d.st||'idle';S.dbx.ok=!!d.r;if(S.dbx.step==='code'&&!S.dbx.challenge)S.dbx.step='idle';}
     S.lastSync=LS.get(STORE+':ls');
   }catch(e){}
 }
 function saveMonth(m,data){LS.set(sk(m),JSON.stringify(data));S.entries[m]=data;}
-function saveDbx(){LS.set(STORE+':dbx',JSON.stringify({k:S.dbx.key,s:S.dbx.secret,r:S.dbx.rt,p:S.dbx.path}));}
+function saveDbx(){LS.set(STORE+':dbx',JSON.stringify({k:S.dbx.key,s:S.dbx.secret,r:S.dbx.rt,p:S.dbx.path,v:S.dbx.verifier,ch:S.dbx.challenge,st:S.dbx.step}));}
+function buildAuthUrl(){return 'https://www.dropbox.com/oauth2/authorize?client_id='+encodeURIComponent(S.dbx.key)+'&response_type=code&redirect_uri='+encodeURIComponent(DBX_REDIR)+'&token_access_type=offline&code_challenge='+encodeURIComponent(S.dbx.challenge)+'&code_challenge_method=S256';}
 
 // ─── Utils ────────────────────────────────────────────────
 function fmtDate(d){const[y,m,day]=d.split('-');return day+'/'+m+'/'+y;}
@@ -401,12 +402,13 @@ function renderSettings(){
       <button class="sbtn outline" onclick="disconnect()" style="margin-top:8px">Déconnecter Dropbox</button>`;
   } else if(S.dbx.step==='code'){
     c.innerHTML=`<div class="scard">
-      <div style="color:#2E1000;font-weight:600;font-size:14px;margin-bottom:10px">Étape 2 — Récupérer le code</div>
-      <div class="step-row"><span class="step-num">1.</span><span class="step-txt">Sur la page Dropbox qui vient de s'ouvrir, cliquez "Allow" / "Autoriser"</span></div>
-      <div class="step-row"><span class="step-num">2.</span><span class="step-txt">Vous serez redirigé vers une page localhost qui ne s'affiche pas — c'est normal</span></div>
-      <div class="step-row"><span class="step-num">3.</span><span class="step-txt">Copiez l'URL complète depuis la barre d'adresse, ou juste le code (après "code=")</span></div>
-      <div class="step-row"><span class="step-num">4.</span><span class="step-txt">Collez ci-dessous et validez</span></div>
+      <div style="color:#2E1000;font-weight:600;font-size:14px;margin-bottom:10px">Étape 2 — Autoriser Dropbox</div>
+      <div class="step-row"><span class="step-num">1.</span><span class="step-txt">Tapez le bouton ci-dessous pour ouvrir l'autorisation Dropbox dans un nouvel onglet</span></div>
+      <div class="step-row"><span class="step-num">2.</span><span class="step-txt">Vérifiez que vous êtes loguée sur le bon compte Dropbox, puis cliquez <b>Allow / Autoriser</b></span></div>
+      <div class="step-row"><span class="step-num">3.</span><span class="step-txt">Dropbox vous redirige vers une page <b>localhost</b> qui ne charge pas — c'est normal</span></div>
+      <div class="step-row"><span class="step-num">4.</span><span class="step-txt">Copiez l'URL complète depuis la barre d'adresse Safari, revenez sur cet onglet, collez et validez</span></div>
       </div>
+      <a class="sbtn" href="${buildAuthUrl()}" target="_blank" rel="noopener" style="display:block;text-align:center;text-decoration:none;margin-bottom:16px">🔗 Ouvrir l'autorisation Dropbox</a>
       <label class="flabel">CODE OU URL DE REDIRECTION</label>
       <input class="finput" id="s-code" type="text" placeholder="Collez le code ou l'URL ici…">
       <button class="sbtn" onclick="completeOAuth()">Valider</button>
@@ -501,10 +503,11 @@ async function startOAuth(){
   S.dbx.secret=document.getElementById('s-sec').value.trim();
   S.dbx.path=document.getElementById('s-path').value.trim()||'/Notes_de_frais_Anne.xlsx';
   if(!S.dbx.key||!S.dbx.secret)return;
-  const v=genVerifier(),c=await genChallenge(v);
-  S.dbx.verifier=v;
-  window.open('https://www.dropbox.com/oauth2/authorize?client_id='+encodeURIComponent(S.dbx.key)+'&response_type=code&redirect_uri='+encodeURIComponent(DBX_REDIR)+'&token_access_type=offline&code_challenge='+encodeURIComponent(c)+'&code_challenge_method=S256','_blank');
-  S.dbx.step='code';renderSettings();
+  S.dbx.verifier=genVerifier();
+  S.dbx.challenge=await genChallenge(S.dbx.verifier);
+  S.dbx.step='code';
+  saveDbx();
+  renderSettings();
 }
 async function completeOAuth(){
   const raw=document.getElementById('s-code').value.trim();
@@ -516,12 +519,12 @@ async function completeOAuth(){
     const data=await dbxExchange(S.dbx.key,S.dbx.secret,code,S.dbx.verifier);
     if(data.error)throw new Error(data.error_description||data.error);
     if(!data.refresh_token)throw new Error('Pas de refresh_token reçu — vérifiez App key/secret');
-    S.dbx.rt=data.refresh_token;S.dbx.ok=true;S.dbx.step='idle';S.dbx.verifier='';
+    S.dbx.rt=data.refresh_token;S.dbx.ok=true;S.dbx.step='idle';S.dbx.verifier='';S.dbx.challenge='';
     saveDbx();showSync('ok','Dropbox connecté !');render();
     setTimeout(()=>showSync(null,''),3000);
   }catch(err){showSync('error','Erreur : '+err.message);}
 }
-function cancelOAuth(){S.dbx.step='idle';S.dbx.verifier='';renderSettings();}
+function cancelOAuth(){S.dbx.step='idle';S.dbx.verifier='';S.dbx.challenge='';saveDbx();renderSettings();}
 async function syncDropbox(){
   showSync('syncing','Génération du fichier Excel…');
   try{
