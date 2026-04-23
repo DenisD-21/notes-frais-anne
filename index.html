@@ -60,6 +60,11 @@ input:focus,select:focus{outline:none;border-color:#C4622D!important;box-shadow:
 .erow:hover .del-btn,.erow:active .del-btn{opacity:1;color:#C03030;}
 /* Breakdown */
 #breakdown-card{margin-top:20px;background:#fff;border-radius:14px;padding:16px 18px;box-shadow:0 1px 6px rgba(196,98,45,.09);border:1px solid rgba(196,98,45,.12);}
+#settlement-card{margin-top:14px;background:#fff;border-radius:14px;padding:16px 18px;box-shadow:0 1px 6px rgba(196,98,45,.09);border:1px solid rgba(196,98,45,.12);}
+.set-row{display:flex;align-items:center;gap:10px;margin-top:10px;}
+.set-row label{flex:0 0 90px;color:#2E1000;font-size:13px;font-weight:500;}
+.set-row input,.set-row select{flex:1;padding:8px 10px;border:1.5px solid rgba(196,98,45,.25);border-radius:8px;background:#fff;color:#2E1000;font-family:Georgia,'Times New Roman',serif;font-size:14px;}
+.set-row input:focus,.set-row select:focus{border-color:#C4622D;outline:none;}
 .bk-title{color:#C4622D;font-size:9.5px;letter-spacing:2.5px;margin-bottom:12px;font-weight:600;}
 .bk-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid rgba(196,98,45,.07);}
 .bk-lbl{color:#2E1000;font-size:13px;}
@@ -142,6 +147,7 @@ input:focus,select:focus{outline:none;border-color:#C4622D!important;box-shadow:
     <div id="content-area">
       <div id="entries-list"></div>
       <div id="breakdown-card" class="hidden"></div>
+      <div id="settlement-card" class="hidden"></div>
       <div id="action-btns"></div>
     </div>
   </div>
@@ -204,10 +210,11 @@ const DBX_REDIR='http://localhost';
 // ─── State ────────────────────────────────────────────────
 let S={
   month:new Date().getMonth(), year:new Date().getFullYear(),
-  entries:{}, view:'main', mode:'frais',
+  entries:{}, settlements:{}, view:'main', mode:'frais',
   dbx:{key:'',secret:'',rt:'',path:'/Notes_de_frais_Anne.xlsx',ok:false,step:'idle',verifier:'',challenge:''},
   sync:{status:null,msg:''}, lastSync:null
 };
+const PAY_MEANS=['','Virement','Chèque','Espèces','Carte bancaire','Autre'];
 
 // ─── Storage ──────────────────────────────────────────────
 const LS={
@@ -215,10 +222,12 @@ const LS={
   set:(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}}
 };
 function sk(m){return STORE+':'+S.year+':'+m;}
+function settKey(){return STORE+':sett:'+S.year;}
 function loadYear(){
   const all={};
   for(let m=0;m<12;m++){const v=LS.get(sk(m));all[m]=v?JSON.parse(v):[];}
   S.entries=all;
+  const ss=LS.get(settKey());S.settlements=ss?JSON.parse(ss):{};
   try{
     const s=LS.get(STORE+':dbx');
     if(s){const d=JSON.parse(s);S.dbx.key=d.k||'';S.dbx.secret=d.s||'';S.dbx.rt=d.r||'';S.dbx.path=d.p||'/Notes_de_frais_Anne.xlsx';S.dbx.verifier=d.v||'';S.dbx.challenge=d.ch||'';S.dbx.step=d.st||'idle';S.dbx.ok=!!d.r;if(S.dbx.step==='code'&&!S.dbx.challenge)S.dbx.step='idle';}
@@ -226,6 +235,7 @@ function loadYear(){
   }catch(e){}
 }
 function saveMonth(m,data){LS.set(sk(m),JSON.stringify(data));S.entries[m]=data;}
+function saveSettlement(m,d){if(!d.date&&!d.means&&!d.ref)delete S.settlements[m];else S.settlements[m]=d;LS.set(settKey(),JSON.stringify(S.settlements));}
 function saveDbx(){LS.set(STORE+':dbx',JSON.stringify({k:S.dbx.key,s:S.dbx.secret,r:S.dbx.rt,p:S.dbx.path,v:S.dbx.verifier,ch:S.dbx.challenge,st:S.dbx.step}));}
 function buildAuthUrl(){return 'https://www.dropbox.com/oauth2/authorize?client_id='+encodeURIComponent(S.dbx.key)+'&response_type=code&redirect_uri='+encodeURIComponent(DBX_REDIR)+'&token_access_type=offline&code_challenge='+encodeURIComponent(S.dbx.challenge)+'&code_challenge_method=S256';}
 
@@ -278,60 +288,170 @@ function createZip(files){
   let pos=0;for(const p of all){res.set(p,pos);pos+=p.length;}
   return res;
 }
-function escX(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function escX(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function colLetter(n){let s='';n++;while(n>0){s=String.fromCharCode(65+((n-1)%26))+s;n=Math.floor((n-1)/26);}return s;}
+// Excel date serial (accounts for the 1900 leap-year bug)
+function xlDate(yyyy_mm_dd){if(!yyyy_mm_dd)return null;const[y,m,d]=yyyy_mm_dd.split('-').map(Number);const ms=Date.UTC(y,m-1,d)-Date.UTC(1899,11,30);return Math.floor(ms/86400000);}
+// Cell can be: string, number, null/'', or {v?, f?, s?} (v=value, f=formula, s=style index)
+function cellXml(c,ci,ri){
+  if(c===null||c===undefined||c==='')return'';
+  const ref=colLetter(ci)+(ri+1);
+  let s,f,v,t;
+  if(typeof c==='object'){s=c.s;f=c.f;v=c.v;}
+  else{v=c;}
+  const sa=s!==undefined?` s="${s}"`:'';
+  if(f!==undefined){
+    const va=v!==undefined?`<v>${v}</v>`:'';
+    return `<c r="${ref}"${sa}><f>${escX(f)}</f>${va}</c>`;
+  }
+  if(typeof v==='number')return `<c r="${ref}"${sa}><v>${v}</v></c>`;
+  return `<c r="${ref}"${sa} t="inlineStr"><is><t>${escX(v)}</t></is></c>`;
+}
 function rowsToXml(rows){
   return rows.map((row,ri)=>{
-    const cells=row.map((c,ci)=>{
-      if(c===null||c===undefined||c==='')return'';
-      const ref=colLetter(ci)+(ri+1);
-      return typeof c==='number'?`<c r="${ref}"><v>${c}</v></c>`:`<c r="${ref}" t="inlineStr"><is><t>${escX(c)}</t></is></c>`;
-    }).join('');
+    const cells=row.map((c,ci)=>cellXml(c,ci,ri)).join('');
     return cells?`<row r="${ri+1}">${cells}</row>`:'';
   }).filter(Boolean).join('');
 }
+// xl/styles.xml — palette charte (orange #C4622D, brun #2E1000, crème #F5EFE6)
+const STYLES_XML=`<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<numFmts count="3"><numFmt numFmtId="164" formatCode="#,##0.00\\ &quot;€&quot;"/><numFmt numFmtId="165" formatCode="#,##0\\ &quot;km&quot;"/><numFmt numFmtId="166" formatCode="dd/mm/yyyy"/></numFmts>
+<fonts count="4">
+<font><sz val="11"/><color rgb="FF2E1000"/><name val="Calibri"/></font>
+<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
+<font><b/><sz val="11"/><color rgb="FF2E1000"/><name val="Calibri"/></font>
+<font><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
+</fonts>
+<fills count="5">
+<fill><patternFill patternType="none"/></fill>
+<fill><patternFill patternType="gray125"/></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFC4622D"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFF5EFE6"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FF2E1000"/></patternFill></fill>
+</fills>
+<borders count="2">
+<border/>
+<border><left style="thin"><color rgb="FF8B6F4E"/></left><right style="thin"><color rgb="FF8B6F4E"/></right><top style="thin"><color rgb="FF8B6F4E"/></top><bottom style="thin"><color rgb="FF8B6F4E"/></bottom></border>
+</borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="13">
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>
+<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>
+<xf numFmtId="165" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>
+<xf numFmtId="166" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>
+<xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+<xf numFmtId="164" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"/>
+<xf numFmtId="165" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"/>
+<xf numFmtId="166" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center"/></xf>
+<xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+<xf numFmtId="164" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"/>
+<xf numFmtId="165" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1"/>
+</cellXfs>
+<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`;
+// Style indices: 0=default, 1=header(orange/blanc/gras), 2=text+border, 3=€, 4=km, 5=date,
+//                6=cream text/bold, 7=cream €, 8=cream km, 9=cream date,
+//                10=brown total text, 11=brown total €, 12=brown total km
 function buildXlsx(sheets){
   const files=[];
-  const ct='<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')+'</Types>';
+  const ct='<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'+sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')+'</Types>';
   files.push({name:'[Content_Types].xml',data:ct});
   files.push({name:'_rels/.rels',data:'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'});
   files.push({name:'xl/workbook.xml',data:'<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'+sheets.map((s,i)=>`<sheet name="${escX(s.name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')+'</sheets></workbook>'});
-  files.push({name:'xl/_rels/workbook.xml.rels',data:'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+sheets.map((s,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')+'</Relationships>'});
+  files.push({name:'xl/_rels/workbook.xml.rels',data:'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'+sheets.map((s,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')+'</Relationships>'});
+  files.push({name:'xl/styles.xml',data:STYLES_XML});
   sheets.forEach((sheet,si)=>{
-    files.push({name:`xl/worksheets/sheet${si+1}.xml`,data:`<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rowsToXml(sheet.rows)}</sheetData></worksheet>`});
+    const cols=sheet.cols?`<cols>${sheet.cols.map((w,i)=>`<col min="${i+1}" max="${i+1}" width="${w}" customWidth="1"/>`).join('')}</cols>`:'';
+    const tab=sheet.tabColor?`<sheetPr><tabColor rgb="${sheet.tabColor}"/></sheetPr>`:'';
+    const views=`<sheetViews><sheetView workbookViewId="0"${si===0?' tabSelected="1"':''}><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`;
+    files.push({name:`xl/worksheets/sheet${si+1}.xml`,data:`<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${tab}<dimension ref="A1"/>${views}<sheetFormatPr defaultRowHeight="16" defaultColWidth="11"/>${cols}<sheetData>${rowsToXml(sheet.rows)}</sheetData></worksheet>`});
   });
   return createZip(files);
 }
 function buildExcel(year){
-  const sheets=[];
+  // ── Feuille "Données" : ligne par dépense ────────────────────────
+  // Colonnes : Mois | Date | Type | Catégorie | Motif | Véhicule | Km | IK (€) | Montant (€)
+  const dataHeader=['Mois','Date','Type','Catégorie','Motif','Véhicule','Km','IK (€)','Montant (€)'].map(h=>({v:h,s:1}));
+  const dataRows=[dataHeader];
   MONTHS.forEach((mName,mi)=>{
-    const entries=S.entries[mi]||[];
-    const t=computeTotals(entries);
-    const gt=grandTotal(t);
-    const rows=[
-      ['NOTE DE FRAIS — '+mName.toUpperCase()+' '+year,'','','','','','','','','','CLOS SAINT JACQUES'],
-      [],['Titulaire :','Anne DUVEAU','','Fonction :','Présidente'],[],
-      ['Date','Motif / Description','Véhicule','Km','IK (€)','Transport / Loc.','Parking / Péage','Hôtel','Restaurant / Bar','Téléphone','Divers'],
-    ];
-    if(!entries.length)rows.push(['(aucune dépense ce mois)']);
-    else entries.forEach(e=>{
-      if(e.type==='ik')rows.push([fmtDate(e.date),e.description,e.vehicle,e.km,e.ik,'','','','','','']);
-      else rows.push([fmtDate(e.date),e.description,'','','',...CAT_KEYS.map(k=>k===e.category?e.amount:'')]);
+    const entries=[...(S.entries[mi]||[])].sort((a,b)=>a.date.localeCompare(b.date));
+    entries.forEach(e=>{
+      const dateSerial=xlDate(e.date);
+      if(e.type==='ik'){
+        dataRows.push([
+          {v:mName,s:2},
+          dateSerial!==null?{v:dateSerial,s:5}:{v:'',s:2},
+          {v:'IK',s:2},
+          {v:'',s:2},
+          {v:e.description||'',s:2},
+          {v:e.vehicle||'',s:2},
+          {v:+e.km||0,s:4},
+          {v:+e.ik||0,s:3},
+          {v:'',s:3}
+        ]);
+      } else {
+        const label=CAT_LABELS[CAT_KEYS.indexOf(e.category)]||e.category;
+        dataRows.push([
+          {v:mName,s:2},
+          dateSerial!==null?{v:dateSerial,s:5}:{v:'',s:2},
+          {v:'Frais',s:2},
+          {v:label,s:2},
+          {v:e.description||'',s:2},
+          {v:'',s:2},
+          {v:'',s:4},
+          {v:'',s:3},
+          {v:+e.amount||0,s:3}
+        ]);
+      }
     });
-    rows.push([],['TOTAL','','',t.km||'',t.ik||'',...CAT_KEYS.map(k=>t[k]||'')],[],['TOTAL GÉNÉRAL DU MOIS','','','',gt]);
-    sheets.push({name:mName,rows});
   });
-  const rr=[['RÉCAPITULATIF ANNUEL '+year+' — CLOS SAINT JACQUES'],['Anne DUVEAU · Présidente'],[],['Mois','Frais divers','IK (€)','Km','TOTAL GÉNÉRAL']];
-  let aF=0,aI=0,aK=0,aG=0;
+  // ── Feuille "Récapitulatif" : 12 mois × catégories en SUMIFS + règlement ──
+  // Colonnes : Mois | <6 catégories> | Total Frais | Km | IK (€) | TOTAL GÉNÉRAL | Date règlement | Moyen | Référence
+  const recapHeader=['Mois',...CAT_LABELS,'Total Frais','Km','IK (€)','TOTAL GÉNÉRAL','Date règlement','Moyen','Référence'].map(h=>({v:h,s:1}));
+  const recapRows=[recapHeader];
   MONTHS.forEach((mName,mi)=>{
-    const t=computeTotals(S.entries[mi]||[]);const gt=grandTotal(t);
-    const frais=CAT_KEYS.reduce((s,k)=>s+(t[k]||0),0);
-    aF+=frais;aI+=t.ik;aK+=t.km;aG+=gt;
-    rr.push([mName,frais||'',t.ik||'',t.km||'',gt||'']);
+    const r=mi+2; // numéro de ligne dans la feuille (1=header, 2=Janvier…)
+    const sett=S.settlements[mi]||{};
+    const dateSerial=xlDate(sett.date);
+    const row=[{v:mName,s:6}]; // Mois (colonne A) — fond crème
+    // 6 catégories — SUMIFS sur Données
+    CAT_LABELS.forEach((label)=>{
+      row.push({f:`SUMIFS(Données!I:I,Données!A:A,A${r},Données!D:D,"${label.replace(/"/g,'""')}")`,s:7});
+    });
+    // Total Frais (colonne H)
+    row.push({f:`SUM(B${r}:G${r})`,s:7});
+    // Km (colonne I)
+    row.push({f:`SUMIFS(Données!G:G,Données!A:A,A${r})`,s:8});
+    // IK € (colonne J)
+    row.push({f:`SUMIFS(Données!H:H,Données!A:A,A${r})`,s:7});
+    // TOTAL GÉNÉRAL (colonne K) = Total Frais + IK
+    row.push({f:`H${r}+J${r}`,s:7});
+    // Date règlement (L)
+    row.push(dateSerial!==null?{v:dateSerial,s:9}:{v:'',s:6});
+    // Moyen (M)
+    row.push({v:sett.means||'',s:6});
+    // Référence (N)
+    row.push({v:sett.ref||'',s:6});
+    recapRows.push(row);
   });
-  rr.push([],['TOTAL ANNUEL',aF,aI,aK,aG]);
-  sheets.push({name:'Récapitulatif',rows:rr});
-  return buildXlsx(sheets);
+  // Ligne TOTAL ANNUEL (brun foncé)
+  const totRow=[{v:'TOTAL ANNUEL '+year,s:10}];
+  for(let ci=1;ci<=10;ci++){
+    const L=colLetter(ci);
+    const styleIdx=ci===8?12:11; // Km en col I → style 12, sinon €
+    totRow.push({f:`SUM(${L}2:${L}13)`,s:styleIdx});
+  }
+  totRow.push({v:'',s:10},{v:'',s:10},{v:'',s:10});
+  recapRows.push(totRow);
+  // Largeurs colonnes
+  const dataCols=[10,12,8,32,38,16,8,12,14];
+  const recapCols=[12,16,16,12,16,12,12,14,10,12,16,14,14,18];
+  return buildXlsx([
+    {name:'Données',rows:dataRows,cols:dataCols,tabColor:'FFC4622D'},
+    {name:'Récapitulatif',rows:recapRows,cols:recapCols,tabColor:'FF2E1000'}
+  ]);
 }
 
 // ─── Render ───────────────────────────────────────────────
@@ -361,6 +481,7 @@ function renderTotals(){
 }
 function renderEntries(){
   const me=S.entries[S.month]||[],t=computeTotals(me),gt=grandTotal(t);
+  renderSettlement(me.length>0);
   if(!me.length){
     document.getElementById('entries-list').innerHTML=`<div class="empty-msg">Aucune dépense saisie<br><span>pour ${MONTHS[S.month]} ${S.year}</span></div>`;
     document.getElementById('breakdown-card').classList.add('hidden');
@@ -382,6 +503,23 @@ function renderEntries(){
   bk.innerHTML=`<div class="bk-title">VENTILATION PAR CATÉGORIE</div>`+bkRows.map(x=>`
     <div class="bk-row"><div class="bk-lbl">${x.label}${x.sub?`<span class="bk-sub">(${x.sub})</span>`:''}</div><div class="bk-val">${fmtNum(x.v)} €</div></div>`).join('')+`
     <div class="bk-total"><span>Total général</span><span>${fmtNum(gt)} €</span></div>`;
+}
+function renderSettlement(visible){
+  const card=document.getElementById('settlement-card');
+  if(!visible){card.classList.add('hidden');return;}
+  card.classList.remove('hidden');
+  const s=S.settlements[S.month]||{};
+  card.innerHTML=`<div class="bk-title">💳 RÈGLEMENT DE ${MONTHS[S.month].toUpperCase()}</div>
+    <div class="set-row"><label>Date</label><input type="date" id="set-date" value="${s.date||''}" onchange="onSettlementChange()"></div>
+    <div class="set-row"><label>Moyen</label><select id="set-means" onchange="onSettlementChange()">${PAY_MEANS.map(m=>`<option value="${m}"${m===(s.means||'')?' selected':''}>${m||'—'}</option>`).join('')}</select></div>
+    <div class="set-row"><label>Référence</label><input type="text" id="set-ref" value="${escX(s.ref||'')}" placeholder="ex : VIR-2026-04" onchange="onSettlementChange()"></div>`;
+}
+function onSettlementChange(){
+  saveSettlement(S.month,{
+    date:document.getElementById('set-date').value,
+    means:document.getElementById('set-means').value,
+    ref:document.getElementById('set-ref').value.trim()
+  });
 }
 function renderActionBtns(){
   const me=S.entries[S.month]||[];
