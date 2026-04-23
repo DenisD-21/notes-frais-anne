@@ -249,7 +249,11 @@ function loadYear(){
   const ss=LS.get(settKey());S.settlements=ss?JSON.parse(ss):{};
   try{
     const s=LS.get(STORE+':dbx');
-    if(s){const d=JSON.parse(s);S.dbx.key=d.k||'';S.dbx.secret=d.s||'';S.dbx.rt=d.r||'';S.dbx.path=d.p||'/Notes_de_frais_Anne.xlsx';S.dbx.verifier=d.v||'';S.dbx.challenge=d.ch||'';S.dbx.step=d.st||'idle';S.dbx.ok=!!d.r;if(S.dbx.step==='code'&&!S.dbx.challenge)S.dbx.step='idle';}
+    if(s){const d=JSON.parse(s);S.dbx.key=d.k||'';S.dbx.secret=d.s||'';S.dbx.rt=d.r||'';S.dbx.path=d.p||'/{year} - Notes_de_frais_Anne.xlsx';S.dbx.verifier=d.v||'';S.dbx.challenge=d.ch||'';S.dbx.step=d.st||'idle';S.dbx.ok=!!d.r;if(S.dbx.step==='code'&&!S.dbx.challenge)S.dbx.step='idle';
+      // Migration : remplacer l'année courante par {year} si le template n'est pas déjà en place
+      const cy=new Date().getFullYear();
+      if(S.dbx.path&&!S.dbx.path.includes('{year}')){const re=new RegExp('\\b'+cy+'\\b','g');if(re.test(S.dbx.path)){S.dbx.path=S.dbx.path.replace(re,'{year}');saveDbx();}}
+    }
     S.lastSync=LS.get(STORE+':ls');
   }catch(e){}
 }
@@ -261,6 +265,7 @@ function monthFromDate(d){return parseInt(d.slice(5,7),10)-1;}
 function yearFromDate(d){return parseInt(d.slice(0,4),10);}
 function saveSettlement(m,d){if(!d.date&&!d.means&&!d.ref)delete S.settlements[m];else S.settlements[m]=d;LS.set(settKey(),JSON.stringify(S.settlements));}
 function saveDbx(){LS.set(STORE+':dbx',JSON.stringify({k:S.dbx.key,s:S.dbx.secret,r:S.dbx.rt,p:S.dbx.path,v:S.dbx.verifier,ch:S.dbx.challenge,st:S.dbx.step}));}
+function resolveDbxPath(year){return(S.dbx.path||'').replace(/\{year\}/g,year);}
 function buildAuthUrl(){return 'https://www.dropbox.com/oauth2/authorize?client_id='+encodeURIComponent(S.dbx.key)+'&response_type=code&redirect_uri='+encodeURIComponent(DBX_REDIR)+'&token_access_type=offline&code_challenge='+encodeURIComponent(S.dbx.challenge)+'&code_challenge_method=S256';}
 
 // ─── Utils ────────────────────────────────────────────────
@@ -555,11 +560,14 @@ function renderActionBtns(){
 function renderSettings(){
   const c=document.getElementById('settings-content');
   if(S.dbx.ok){
+    const tmpl=S.dbx.path||'',resolved=resolveDbxPath(S.year),hasY=tmpl.includes('{year}');
     c.innerHTML=`<div class="scard ok"><div class="sok-title">✓ Dropbox connecté</div>
-      <div class="smeta">Fichier : ${S.dbx.path}</div>
+      <div class="smeta">Template : <code>${escX(tmpl)}</code></div>
+      ${hasY?`<div class="smeta">Pour ${S.year} → <code>${escX(resolved)}</code></div>`:''}
       ${S.lastSync?`<div class="smeta">Dernière synchro : ${S.lastSync}</div>`:''}</div>
       <label class="flabel">CHEMIN DU FICHIER SUR DROPBOX</label>
-      <input class="finput" id="s-path" value="${S.dbx.path}" type="text">
+      <input class="finput" id="s-path" value="${escX(tmpl)}" type="text" placeholder="/.../{year} - Notes_de_frais_Anne.xlsx">
+      <div style="font-size:11px;color:#8B6F4E;margin-top:4px;margin-bottom:8px">Utilisez <code>{year}</code> comme placeholder pour l'année. Chaque année sera stockée dans son propre .xlsx dans le même dossier.</div>
       <button class="sbtn" onclick="savePath()">Enregistrer le chemin</button>
       <button class="sbtn outline" onclick="disconnect()" style="margin-top:8px">Déconnecter Dropbox</button>`;
   } else if(S.dbx.step==='code'){
@@ -589,7 +597,7 @@ function renderSettings(){
       <label class="flabel">APP SECRET</label>
       <input class="finput" id="s-sec" type="password" value="${S.dbx.secret}" placeholder="App secret">
       <label class="flabel">CHEMIN DU FICHIER SUR DROPBOX</label>
-      <input class="finput" id="s-path" value="${S.dbx.path}" placeholder="/Notes_de_frais_Anne.xlsx">
+      <input class="finput" id="s-path" value="${escX(S.dbx.path)}" placeholder="/.../{year} - Notes_de_frais_Anne.xlsx">
       <button class="sbtn" onclick="startOAuth()">Connecter Dropbox</button>`;
   }
 }
@@ -742,7 +750,7 @@ function delEntry(id){
 async function startOAuth(){
   S.dbx.key=document.getElementById('s-key').value.trim();
   S.dbx.secret=document.getElementById('s-sec').value.trim();
-  S.dbx.path=document.getElementById('s-path').value.trim()||'/Notes_de_frais_Anne.xlsx';
+  S.dbx.path=document.getElementById('s-path').value.trim()||'/{year} - Notes_de_frais_Anne.xlsx';
   if(!S.dbx.key||!S.dbx.secret)return;
   S.dbx.verifier=genVerifier();
   S.dbx.challenge=await genChallenge(S.dbx.verifier);
@@ -775,7 +783,7 @@ async function syncDropbox(){
     const token=await dbxRefresh(S.dbx.key,S.dbx.secret,S.dbx.rt);
     if(!token)throw new Error('Refresh échoué — reconnectez Dropbox');
     showSync('syncing','Envoi vers Dropbox…');
-    const res=await dbxUpload(token,S.dbx.path,new Uint8Array(data));
+    const res=await dbxUpload(token,resolveDbxPath(S.year),new Uint8Array(data));
     if(res.error)throw new Error(res.error_summary||res.error);
     const ts=new Date().toLocaleString('fr-FR');
     S.lastSync=ts;LS.set(STORE+':ls',ts);
