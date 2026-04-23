@@ -89,6 +89,13 @@ input:focus,select:focus{outline:none;border-color:#C4622D!important;box-shadow:
 .step-num{color:#C4622D;font-weight:700;font-size:13px;flex-shrink:0;min-width:16px;}
 .step-txt{color:#5C3030;font-size:13px;line-height:1.45;}
 .flabel{display:block;color:#C4622D;font-size:10px;letter-spacing:2px;margin-bottom:6px;font-weight:600;margin-top:14px;}
+.flabel.check-row{display:flex;align-items:center;gap:8px;letter-spacing:.5px;font-size:13px;color:#2E1000;text-transform:none;font-weight:500;}
+.flabel.check-row input{width:18px;height:18px;accent-color:#C4622D;margin:0;}
+#calc-btn{width:100%;padding:11px;margin-top:6px;border-radius:11px;border:1.5px dashed rgba(196,98,45,.45);background:#FEF5EC;color:#C4622D;font-family:Georgia,'Times New Roman',serif;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s;}
+#calc-btn:active{transform:scale(.98);}
+#calc-btn.loading{opacity:.55;pointer-events:none;}
+#calc-btn.ok{background:#E8F3E2;color:#4A8A35;border-color:rgba(74,138,53,.45);border-style:solid;}
+#calc-btn.err{background:#FCE8E6;color:#9A3D1E;border-color:rgba(154,61,30,.45);border-style:solid;}
 .finput{width:100%;padding:12px 14px;border:1.5px solid rgba(196,98,45,.25);border-radius:11px;background:#fff;font-size:15px;color:#2E1000;font-family:Georgia,'Times New Roman',serif;margin-bottom:4px;}
 .sbtn{width:100%;padding:12px;border-radius:12px;border:none;background:#C4622D;color:#fff;font-size:13px;font-weight:600;cursor:pointer;margin-top:10px;}
 .sbtn.outline{background:transparent;border:1.5px solid rgba(196,98,45,.4);color:#C4622D;}
@@ -164,8 +171,8 @@ input:focus,select:focus{outline:none;border-color:#C4622D!important;box-shadow:
       <button class="form-close" onclick="hideForm()">&#215;</button>
     </div>
     <div id="mode-tabs">
-      <button class="mtab active" id="tab-frais" onclick="setMode('frais')">&#128179; Frais</button>
-      <button class="mtab" id="tab-ik" onclick="setMode('ik')">&#128663; Indemn&iacute;t&eacute;s km</button>
+      <button class="mtab" id="tab-frais" onclick="setMode('frais')">&#128179; Frais</button>
+      <button class="mtab active" id="tab-ik" onclick="setMode('ik')">&#128663; Indemn&iacute;t&eacute;s km</button>
     </div>
     <label class="flabel">DATE</label>
     <input class="finput" type="date" id="f-date">
@@ -177,11 +184,17 @@ input:focus,select:focus{outline:none;border-color:#C4622D!important;box-shadow:
       <label class="flabel">MONTANT TTC (&euro;)</label>
       <input class="finput" type="number" id="f-amt" placeholder="Ex : 24,50" min="0" step="0.01">
     </div>
-    <div id="ik-fields" class="hidden">
+    <div id="ik-fields">
       <label class="flabel">V&Eacute;HICULE</label>
       <select class="finput" id="f-veh"></select>
+      <label class="flabel">LIEU DE D&Eacute;PART</label>
+      <input class="finput" type="text" id="f-from" placeholder="1 rue Pierre Mouchoux, 21190 Meursault">
+      <label class="flabel">LIEU D'ARRIV&Eacute;E</label>
+      <input class="finput" type="text" id="f-to" placeholder="Ex : 10 rue de la R&eacute;publique, 21000 Dijon">
+      <label class="flabel check-row"><input type="checkbox" id="f-return" checked><span>Aller-retour (&times;2)</span></label>
+      <button id="calc-btn" type="button" onclick="calcDistance()">&#128506; Calculer la distance</button>
       <label class="flabel">KILOM&Egrave;TRES PARCOURUS</label>
-      <input class="finput" type="number" id="f-km" placeholder="Ex : 142" min="0" step="1" oninput="updIKPreview()">
+      <input class="finput" type="number" id="f-km" placeholder="(auto apr&egrave;s calcul, modifiable)" min="0" step="1" oninput="updIKPreview()">
       <div id="ik-preview-box" class="hidden">
         <span>Indemn&iacute;t&eacute; calcul&eacute;e</span>
         <span id="ik-preview-val"></span>
@@ -200,6 +213,11 @@ input:focus,select:focus{outline:none;border-color:#C4622D!important;box-shadow:
 // ─── Constants ────────────────────────────────────────────
 const OG='#C4622D',DK='#2E1000';
 const BAREME={'3CV':0.502,'4CV':0.575,'5CV':0.636,'6CV':0.665,'7CV+':0.697};
+const DEFAULT_VEH='5CV';
+const DEFAULT_FROM='1 rue Pierre Mouchoux, 21190 Meursault';
+// Coords de secours pour l'adresse par défaut (géocodées via Nominatim) —
+// évite un appel réseau inutile si l'utilisateur ne change pas le départ.
+const DEFAULT_FROM_COORDS={lat:46.9777586,lon:4.7686410};
 const CAT_KEYS=['transport','peage','hotel','restaurant','telephone','divers'];
 const CAT_LABELS=['Loc. V\u00e9hicule / Avion / Train / Taxi','Parking / P\u00e9age','H\u00f4tel','Restaurant / Bar','T\u00e9l\u00e9phone','Divers'];
 const CAT_ICONS=['✈️','🛣️','🏨','🍽️','📱','📎'];
@@ -210,7 +228,7 @@ const DBX_REDIR='http://localhost';
 // ─── State ────────────────────────────────────────────────
 let S={
   month:new Date().getMonth(), year:new Date().getFullYear(),
-  entries:{}, settlements:{}, view:'main', mode:'frais',
+  entries:{}, settlements:{}, view:'main', mode:'ik',
   dbx:{key:'',secret:'',rt:'',path:'/Notes_de_frais_Anne.xlsx',ok:false,step:'idle',verifier:'',challenge:''},
   sync:{status:null,msg:''}, lastSync:null
 };
@@ -588,8 +606,18 @@ function showForm(){
   document.getElementById('f-desc').value='';
   document.getElementById('f-amt').value='';
   document.getElementById('f-km').value='';
+  document.getElementById('f-from').value=DEFAULT_FROM;
+  document.getElementById('f-to').value='';
+  document.getElementById('f-return').checked=true;
+  document.getElementById('f-veh').value=DEFAULT_VEH;
   document.getElementById('ik-preview-box').classList.add('hidden');
+  resetCalcBtn();
   setMode(S.mode);
+}
+function resetCalcBtn(){
+  const b=document.getElementById('calc-btn');
+  if(!b)return;
+  b.className='';b.innerHTML='&#128506; Calculer la distance';
 }
 function hideForm(){document.getElementById('form-overlay').classList.add('hidden');}
 function setMode(m){
@@ -598,6 +626,44 @@ function setMode(m){
   document.getElementById('tab-ik').classList.toggle('active',m==='ik');
   document.getElementById('frais-fields').classList.toggle('hidden',m==='ik');
   document.getElementById('ik-fields').classList.toggle('hidden',m==='frais');
+}
+// Géocodage (Nominatim) + routage (OSRM) — gratuits, sans clé.
+async function geocodeAddr(q){
+  const url='https://nominatim.openstreetmap.org/search?format=json&limit=1&addressdetails=0&q='+encodeURIComponent(q);
+  const r=await fetch(url,{headers:{'Accept-Language':'fr'}});
+  if(!r.ok)throw new Error('Nominatim '+r.status);
+  const a=await r.json();
+  if(!a.length)throw new Error('Adresse introuvable : '+q);
+  return{lat:+a[0].lat,lon:+a[0].lon};
+}
+async function routeKm(a,b){
+  const url=`https://router.project-osrm.org/route/v1/driving/${a.lon},${a.lat};${b.lon},${b.lat}?overview=false`;
+  const r=await fetch(url);
+  if(!r.ok)throw new Error('OSRM '+r.status);
+  const d=await r.json();
+  if(d.code!=='Ok'||!d.routes?.length)throw new Error('Route introuvable');
+  return d.routes[0].distance/1000;
+}
+async function calcDistance(){
+  const btn=document.getElementById('calc-btn');
+  const fromAddr=document.getElementById('f-from').value.trim()||DEFAULT_FROM;
+  const toAddr=document.getElementById('f-to').value.trim();
+  if(!toAddr){btn.className='err';btn.innerHTML='&#9888; Saisissez le lieu d\'arriv&eacute;e';setTimeout(resetCalcBtn,2500);return;}
+  btn.className='loading';btn.innerHTML='&#8987; Recherche en cours&hellip;';
+  try{
+    const from=fromAddr===DEFAULT_FROM?DEFAULT_FROM_COORDS:await geocodeAddr(fromAddr);
+    const to=await geocodeAddr(toAddr);
+    const oneWay=await routeKm(from,to);
+    const ar=document.getElementById('f-return').checked;
+    const km=Math.round(oneWay*(ar?2:1));
+    document.getElementById('f-km').value=km;
+    btn.className='ok';btn.innerHTML=`&#10003; ${km} km ${ar?'(aller-retour)':'(aller simple)'}`;
+    updIKPreview();
+    setTimeout(resetCalcBtn,5000);
+  }catch(err){
+    btn.className='err';btn.innerHTML='&#9888; '+escX(err.message).slice(0,60);
+    setTimeout(resetCalcBtn,4000);
+  }
 }
 function updIKPreview(){
   const km=parseFloat(document.getElementById('f-km').value);
@@ -617,7 +683,10 @@ function saveEntry(){
     const km=parseFloat(document.getElementById('f-km').value);
     const veh=document.getElementById('f-veh').value;
     if(!km||km<=0)return;
-    e={...e,vehicle:veh,km,ik:+(km*BAREME[veh]).toFixed(2)};
+    const from=document.getElementById('f-from').value.trim();
+    const to=document.getElementById('f-to').value.trim();
+    const roundTrip=document.getElementById('f-return').checked;
+    e={...e,vehicle:veh,km,ik:+(km*BAREME[veh]).toFixed(2),from,to,roundTrip};
   } else {
     const amt=parseFloat(document.getElementById('f-amt').value);
     if(!amt||amt<=0)return;
